@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 from mcp.client.stdio import stdio_client
 from mcp import ClientSession
 from mcp_client import MCPClient
-from pipeline_executor import PipelineExecutor
 
 load_dotenv()
 
@@ -187,33 +186,19 @@ async def example():
     # Example tools
     client = MCPClient()
     try:
-        # Get MCP session
-        session = await client.get_session()
-        
-        # List available tools
-        print("Fetching available tools...")
-        tools = await session.list_tools()
-        print(f"Available tools: {tools}")
-        
-        # Generate plan using AgentPlanner
-        planner = AgentPlanner(tools.tools)
-        plan = await planner.generate_plan(
-            "get me my github repos. My github username is aliyanishfaq",
-            []  # Empty history
-        )
-        print('Generated Plan:', json.dumps(plan, indent=2))
-        
-        if plan:
-            # Execute plan using PipelineExecutor
-            executor = PipelineExecutor(plan, tools.tools, session)
-            result = await executor.execute_plan()
-            print('Execution Result:', json.dumps(result, indent=2))
-        else:
-            print('Failed to generate plan')
-            
-    finally:
-        # Ensure resources are closed
-        await client.close()
+        async with stdio_client(client.server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                print('TOOLS', tools)
+                planner = AgentPlanner(tools.tools)
+                result = await planner.generate_plan(
+                    "get me my github repos. My github username is aliyanishfaq",
+                    []  # Empty history
+                )
+                print(json.dumps(result, indent=2))
+    except Exception as e:
+        print(f"Error: {e}")
         raise
 
 if __name__ == "__main__":
