@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from mcp.client.stdio import stdio_client
 from mcp import ClientSession
 from mcp_client import MCPClient
+from pipeline_executor import PipelineExecutor
 
 load_dotenv()
 
@@ -37,7 +38,7 @@ class AgentPlanner:
         self.openai_client = OpenAI(
             api_key=os.getenv("OPENAI_API_KEY")
         )
-        self.openai_model = "gpt-4"  # Fixed model name typo
+        self.openai_model = "gpt-4o"  # Fixed model name typo
         self.tools = tools
     
     async def generate_plan(self, user_message: str, history: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
@@ -56,6 +57,7 @@ class AgentPlanner:
         
         for tool in self.tools:
             # Extract tool details from the Tool object
+            print('[agent_planner] tools', tool)
             tool_name = tool.name
             tool_description = tool.description
             tool_schema = tool.inputSchema
@@ -73,7 +75,7 @@ class AgentPlanner:
             properties_text = "\n".join(properties)
             
             tool_info = f"""Tool: {tool_name}
-            Description: {tool_schema.get('description', '')}
+            Description: {tool_description}
             Parameters:
             {properties_text}
             """
@@ -120,6 +122,8 @@ class AgentPlanner:
         {{"steps": [
           {{ "tool": "reminders", "input": {{ "operation": "create", "name": "Submit report", "dueDate": "today 17:00" }} }}
         ]}}
+
+        THE RESPONSE MUST BE IN A JSON
         """
         
         # Prepare messages
@@ -161,7 +165,7 @@ class AgentPlanner:
                         raise ValueError("Response doesn't contain a valid steps array")
                     
                     # Validate tools exist
-                    tool_names = [tool.get("name") for tool in self.tools]
+                    tool_names = [tool.name for tool in self.tools]
                     for step in parsed["steps"]:
                         if step.get("tool") not in tool_names:
                             raise ValueError(f"Tool {step.get('tool')} not found")
@@ -183,19 +187,33 @@ async def example():
     # Example tools
     client = MCPClient()
     try:
-        async with stdio_client(client.server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                print('TOOLS', tools)
-                planner = AgentPlanner(tools)
-                result = await planner.generate_plan(
-                    "Send Alex a message about our meeting tomorrow",
-                    []  # Empty history
-                )
-                print(json.dumps(result, indent=2))
-    except Exception as e:
-        print(f"Error: {e}")
+        # Get MCP session
+        session = await client.get_session()
+        
+        # List available tools
+        print("Fetching available tools...")
+        tools = await session.list_tools()
+        print(f"Available tools: {tools}")
+        
+        # Generate plan using AgentPlanner
+        planner = AgentPlanner(tools.tools)
+        plan = await planner.generate_plan(
+            "get me my github repos. My github username is aliyanishfaq",
+            []  # Empty history
+        )
+        print('Generated Plan:', json.dumps(plan, indent=2))
+        
+        if plan:
+            # Execute plan using PipelineExecutor
+            executor = PipelineExecutor(plan, tools.tools, session)
+            result = await executor.execute_plan()
+            print('Execution Result:', json.dumps(result, indent=2))
+        else:
+            print('Failed to generate plan')
+            
+    finally:
+        # Ensure resources are closed
+        await client.close()
         raise
 
 if __name__ == "__main__":
