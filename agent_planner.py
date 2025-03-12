@@ -40,6 +40,38 @@ class AgentPlanner:
         self.openai_model = "gpt-4o"  # Fixed model name typo
         self.tools = tools
     
+    def _format_tool_info(self, tool: Any) -> str:
+        """Format information about a single tool
+        
+        Args:
+            tool: Tool object containing name, description, and schema
+            
+        Returns:
+            str: Formatted tool information including name, description, and parameters
+        """
+        # Extract tool details
+        tool_name = tool.name
+        tool_description = tool.description
+        tool_schema = tool.inputSchema
+        
+        # Extract required properties from the schema
+        required_props = tool_schema.get("required", [])
+        
+        # Format properties with required/optional labels
+        properties = []
+        for prop_name, prop_details in tool_schema.get("properties", {}).items():
+            is_required = prop_name in required_props
+            properties.append(f"    - {prop_name}: {prop_details.get('description', '')} "
+                             f"({'REQUIRED' if is_required else 'OPTIONAL'})")
+        
+        properties_text = "\n".join(properties)
+        
+        return f"""Tool: {tool_name}
+        Description: {tool_description}
+        Parameters:
+        {properties_text}
+        """
+    
     async def generate_plan(self, user_message: str, history: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
         """
         Generate an execution plan based on the user's message.
@@ -54,32 +86,8 @@ class AgentPlanner:
         # Format tools information for the prompt
         tools_info = []
         
-        for tool in self.tools:
-            # Extract tool details from the Tool object
-            print('[agent_planner] tools', tool)
-            tool_name = tool.name
-            tool_description = tool.description
-            tool_schema = tool.inputSchema
-            
-            # Extract required properties from the schema
-            required_props = tool_schema.get("required", [])
-            
-            # Format properties with required/optional labels
-            properties = []
-            for prop_name, prop_details in tool_schema.get("properties", {}).items():
-                is_required = prop_name in required_props
-                properties.append(f"    - {prop_name}: {prop_details.get('description', '')} "
-                                 f"({'REQUIRED' if is_required else 'OPTIONAL'})")
-            
-            properties_text = "\n".join(properties)
-            
-            tool_info = f"""Tool: {tool_name}
-            Description: {tool_description}
-            Parameters:
-            {properties_text}
-            """
-            tools_info.append(tool_info)
-        
+        # Format information for each tool
+        tools_info = [self._format_tool_info(tool) for tool in self.tools]
         tools_info_text = "\n\n".join(tools_info)
         
         # Create system prompt
@@ -181,25 +189,160 @@ class AgentPlanner:
             logger.error(f"[AgentPlanner] Error generating plan: {str(e)}")
             return None
 
-# Example usage
-async def example():
+    async def generate_params(self, user_message, tools, step, context):
+
+            # Format tools information for the prompt
+        tools_info = []
+        
+        # Format information for each tool
+        tools_info = [self._format_tool_info(tool) for tool in self.tools]
+        tools_info_text = "\n\n".join(tools_info)
+        prompt = """
+        You are an AI github assistant. Specifically, you are given a step from a plan.
+        You need to generate the input parameters for the tool call.
+
+        CONTEXT FROM PREVIOUS STEPS:
+        {context}
+
+        Here is the step:
+        {step}
+
+        Here are the tools available to you:
+        {tools_info_text}
+
+        Here is the user's message:
+        {user_message}
+
+        The response should be in JSON
+        """
+        formatted_prompt = prompt.format(
+            step=step,
+            tools_info_text=tools_info_text,
+            user_message=user_message,
+            context=context
+        )
+        print('FORMATTED PROMPT', formatted_prompt)
+        response = self.openai_client.chat.completions.create(
+            model=self.openai_model,
+            messages=[{"role": "user", "content": formatted_prompt}],
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        print('CONTENT', content)
+        return content
+
+    async def tool_call_summary(self, result):
+        prompt = """
+        You are an AI github assistant. Specifically, you are given a result from a tool call.
+        You need to summarize the results properly, making sure all the details are included.
+
+        The formatting needs to be very simple
+
+        Here is the result:
+        {result}
+        """
+        formatted_prompt = prompt.format(
+            result=result
+        )
+        response = self.openai_client.chat.completions.create(
+            model=self.openai_model,
+            messages=[{"role": "user", "content": formatted_prompt}],
+        )
+        content = response.choices[0].message.content
+        return content
+
+# Changed function to take input from terminal
+async def main():
+    # Get user input from terminal
+    user_message = input("What would you like me to help you with? ")
+    
     # Example tools
     client = MCPClient()
     try:
+        # Validate GitHub token before proceeding
+        github_token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+        if not github_token:
+            print("ERROR: No GitHub token found in environment variables.")
+            print("Please set GITHUB_PERSONAL_ACCESS_TOKEN in your .env file.")
+            return
+            
+        print("Connecting to GitHub API...")
         async with stdio_client(client.server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                print('TOOLS', tools)
-                planner = AgentPlanner(tools.tools)
-                result = await planner.generate_plan(
-                    "get me my github repos. My github username is aliyanishfaq",
-                    []  # Empty history
-                )
-                print(json.dumps(result, indent=2))
+            try:
+                context = []
+                async with ClientSession(read, write) as session:
+                    try:
+                        await session.initialize()
+                        print("Connection established successfully.")
+                        
+                        # Fetch available tools
+                        try:
+                            print("Fetching available GitHub tools...")
+                            tools_response = await session.list_tools()
+                            tools = tools_response.tools
+                            if not tools:
+                                print("WARNING: No tools available from GitHub API.")
+                                return
+                                
+                            print(f"Successfully retrieved {len(tools)} tools.")
+                            
+                            # Create planner with available tools
+                            planner = AgentPlanner(tools)
+                            
+                            # Generate plan
+                            print(f"\nPlanning steps for: '{user_message}'")
+                            try:
+                                result = await planner.generate_plan(
+                                    user_message,
+                                    []  # Empty history
+                                )
+                                
+                                if not result:
+                                    print("Unable to generate a plan for your request.")
+                                    return
+                                    
+                                print(f"Executing plan with {len(result['steps'])} steps:")
+                                
+                                # Execute each step with error handling
+                                for i, step in enumerate(result['steps']):
+                                    try:
+                                        print(f"\nStep {i+1}: Using tool '{step['tool']}'")
+                                        params = await planner.generate_params(
+                                            user_message,
+                                            tools,
+                                            step,
+                                            context
+                                        )
+                                        params = json.loads(params)
+                                        print(f"  Parameters: {json.dumps(params, indent=2)}")
+                                        
+                                        # Execute the tool call
+                                        result = await session.call_tool(step['tool'], params)
+                                        summary = await planner.tool_call_summary(result)
+                                        print(f"  Result: {summary}")
+                                        context.append(summary)
+                                    except Exception as e:
+                                        logger.error(f"[AgentPlanner] Error executing step {i+1}: {str(e)}")
+                                        print(f"  Error: {str(e)}")
+                            except Exception as e:
+                                logger.error(f"[AgentPlanner] Error generating plan: {str(e)}")
+                                print("Unable to generate a plan for your request.")
+                                return
+                        except Exception as e:
+                            logger.error(f"[AgentPlanner] Error fetching tools: {str(e)}")
+                            print("Unable to fetch tools from GitHub API.")
+                            return
+                    except Exception as e:
+                        logger.error(f"[AgentPlanner] Error initializing session: {str(e)}")
+                        print("Unable to connect to GitHub API.")
+                        return
+            except Exception as e:
+                logger.error(f"[AgentPlanner] Error connecting to GitHub API: {str(e)}")
+                print("Unable to connect to GitHub API.")
+                return
     except Exception as e:
-        print(f"Error: {e}")
-        raise
+        logger.error(f"[AgentPlanner] Error in main function: {str(e)}")
+        print("An error occurred. Please try again later.")
 
 if __name__ == "__main__":
-    asyncio.run(example())
+    asyncio.run(main())
