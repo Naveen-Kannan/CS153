@@ -4,7 +4,7 @@ import logging
 
 from discord.ext import commands
 from dotenv import load_dotenv
-from agent import MistralAgent
+from agent import OpenAIAgent
 
 PREFIX = "!"
 
@@ -19,8 +19,8 @@ load_dotenv()
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-# Import the Mistral agent from the agent.py file
-agent = MistralAgent()
+# Import the OpenAI agent from the agent.py file
+agent = OpenAIAgent()
 
 
 # Get the token from the environment variables
