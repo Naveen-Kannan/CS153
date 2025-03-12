@@ -1,6 +1,7 @@
 import os
 import discord
 from openai import AsyncOpenAI
+from agent_planner import get_github_response
 
 # Models
 GPT4_MINI = "gpt-4o-mini"
@@ -18,9 +19,13 @@ class OpenAIAgent:
     async def run(self, message: discord.Message):
         # Check if this is a code request
         is_code_request = message.content.lower().startswith("code:")
+        is_github_request = message.content.lower().startswith("github:")
         
         # Select the appropriate model and system prompt
-        if is_code_request:
+        if is_github_request:
+            response = await get_github_response(message.content)
+            return response[:2000]
+        elif is_code_request:
             model = O1_MODEL
             system_prompt = CODE_SYSTEM_PROMPT
             # Remove the "code:" prefix from the message

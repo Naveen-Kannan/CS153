@@ -344,5 +344,100 @@ async def main():
         logger.error(f"[AgentPlanner] Error in main function: {str(e)}")
         print("An error occurred. Please try again later.")
 
+async def get_github_response(prompt: str):
+    # Get user input from terminal
+    user_message = prompt
+    final_response = ""
+    
+    # Example tools
+    client = MCPClient()
+    try:
+        # Validate GitHub token before proceeding
+        github_token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+        if not github_token:
+            print("ERROR: No GitHub token found in environment variables.")
+            print("Please set GITHUB_PERSONAL_ACCESS_TOKEN in your .env file.")
+            return
+            
+        print("Connecting to GitHub API...")
+        async with stdio_client(client.server_params) as (read, write):
+            try:
+                context = []
+                async with ClientSession(read, write) as session:
+                    try:
+                        await session.initialize()
+                        print("Connection established successfully.")
+                        
+                        # Fetch available tools
+                        try:
+                            print("Fetching available GitHub tools...")
+                            tools_response = await session.list_tools()
+                            tools = tools_response.tools
+                            if not tools:
+                                print("WARNING: No tools available from GitHub API.")
+                                return
+                                
+                            print(f"Successfully retrieved {len(tools)} tools.")
+                            
+                            # Create planner with available tools
+                            planner = AgentPlanner(tools)
+                            
+                            # Generate plan
+                            print(f"\nPlanning steps for: '{user_message}'")
+                            try:
+                                result = await planner.generate_plan(
+                                    user_message,
+                                    []  # Empty history
+                                )
+                                
+                                if not result:
+                                    print("Unable to generate a plan for your request.")
+                                    return
+                                    
+                                print(f"Executing plan with {len(result['steps'])} steps:")
+                                
+                                # Execute each step with error handling
+                                for i, step in enumerate(result['steps']):
+                                    try:
+                                        print(f"\nStep {i+1}: Using tool '{step['tool']}'")
+                                        params = await planner.generate_params(
+                                            user_message,
+                                            tools,
+                                            step,
+                                            context
+                                        )
+                                        params = json.loads(params)
+                                        print(f"  Parameters: {json.dumps(params, indent=2)}")
+                                        
+                                        # Execute the tool call
+                                        result = await session.call_tool(step['tool'], params)
+                                        summary = await planner.tool_call_summary(result)
+                                        print(f"  Result: {summary}")
+                                        context.append(summary)
+                                        final_response = summary
+                                    except Exception as e:
+                                        logger.error(f"[AgentPlanner] Error executing step {i+1}: {str(e)}")
+                                        print(f"  Error: {str(e)}")
+                            except Exception as e:
+                                logger.error(f"[AgentPlanner] Error generating plan: {str(e)}")
+                                print("Unable to generate a plan for your request.")
+                                return
+                        except Exception as e:
+                            logger.error(f"[AgentPlanner] Error fetching tools: {str(e)}")
+                            print("Unable to fetch tools from GitHub API.")
+                            return
+                    except Exception as e:
+                        logger.error(f"[AgentPlanner] Error initializing session: {str(e)}")
+                        print("Unable to connect to GitHub API.")
+                        return
+            except Exception as e:
+                logger.error(f"[AgentPlanner] Error connecting to GitHub API: {str(e)}")
+                print("Unable to connect to GitHub API.")
+                return
+    except Exception as e:
+        logger.error(f"[AgentPlanner] Error in main function: {str(e)}")
+        print("An error occurred. Please try again later.")
+    return final_response
+
 if __name__ == "__main__":
     asyncio.run(main())
